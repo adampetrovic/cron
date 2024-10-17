@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,35 +17,44 @@ func TestRange(t *testing.T) {
 		min, max uint
 		expected uint64
 		err      string
+		jobName  string
 	}{
-		{"5", 0, 7, 1 << 5, ""},
-		{"0", 0, 7, 1 << 0, ""},
-		{"7", 0, 7, 1 << 7, ""},
+		{"5", 0, 7, 1 << 5, "", ""},
+		{"0", 0, 7, 1 << 0, "", ""},
+		{"7", 0, 7, 1 << 7, "", ""},
 
-		{"5-5", 0, 7, 1 << 5, ""},
-		{"5-6", 0, 7, 1<<5 | 1<<6, ""},
-		{"5-7", 0, 7, 1<<5 | 1<<6 | 1<<7, ""},
+		{"5-5", 0, 7, 1 << 5, "", ""},
+		{"5-6", 0, 7, 1<<5 | 1<<6, "", ""},
+		{"5-7", 0, 7, 1<<5 | 1<<6 | 1<<7, "", ""},
 
-		{"5-6/2", 0, 7, 1 << 5, ""},
-		{"5-7/2", 0, 7, 1<<5 | 1<<7, ""},
-		{"5-7/1", 0, 7, 1<<5 | 1<<6 | 1<<7, ""},
+		{"5-6/2", 0, 7, 1 << 5, "", ""},
+		{"5-7/2", 0, 7, 1<<5 | 1<<7, "", ""},
+		{"5-7/1", 0, 7, 1<<5 | 1<<6 | 1<<7, "", ""},
 
-		{"*", 1, 3, 1<<1 | 1<<2 | 1<<3 | starBit, ""},
-		{"*/2", 1, 3, 1<<1 | 1<<3, ""},
+		{"*", 1, 3, 1<<1 | 1<<2 | 1<<3 | starBit, "", ""},
+		{"*/2", 1, 3, 1<<1 | 1<<3, "", ""},
 
-		{"5--5", 0, 0, zero, "too many hyphens"},
-		{"jan-x", 0, 0, zero, "failed to parse int from"},
-		{"2-x", 1, 5, zero, "failed to parse int from"},
-		{"*/-12", 0, 0, zero, "negative number"},
-		{"*//2", 0, 0, zero, "too many slashes"},
-		{"1", 3, 5, zero, "below minimum"},
-		{"6", 3, 5, zero, "above maximum"},
-		{"5-3", 3, 5, zero, "beyond end of range"},
-		{"*/0", 0, 0, zero, "should be a positive number"},
+		{"H", 0, 59, 1 << 3, "", "job1"},
+		{"H/15", 0, 59, 1<<3 | 1<<18 | 1<<33 | 1<<48, "", "job1"},
+		{"H", 0, 23, 1 << 2, "", "job1"},
+		{"H", 0, 59, 1 << 28, "", "job2"},
+		{"H", 0, 6, 1 << 2, "", "dowJob1"},
+		{"H", 1, 7, 1 << 1, "", "dowJob2"},
+		{"H/2", 0, 6, 1<<1 | 1<<3 | 1<<5, "", "dowJob3"},
+
+		{"5--5", 0, 0, zero, "too many hyphens", ""},
+		{"jan-x", 0, 0, zero, "failed to parse int from", ""},
+		{"2-x", 1, 5, zero, "failed to parse int from", ""},
+		{"*/-12", 0, 0, zero, "negative number", ""},
+		{"*//2", 0, 0, zero, "too many slashes", ""},
+		{"1", 3, 5, zero, "below minimum", ""},
+		{"6", 3, 5, zero, "above maximum", ""},
+		{"5-3", 3, 5, zero, "beyond end of range", ""},
+		{"*/0", 0, 0, zero, "should be a positive number", ""},
 	}
 
 	for _, c := range ranges {
-		actual, err := getRange(c.expr, bounds{c.min, c.max, nil})
+		actual, err := getRange(c.expr, bounds{c.min, c.max, nil}, c.jobName)
 		if len(c.err) != 0 && (err == nil || !strings.Contains(err.Error(), c.err)) {
 			t.Errorf("%s => expected %v, got %v", c.expr, c.err, err)
 		}
@@ -52,7 +62,8 @@ func TestRange(t *testing.T) {
 			t.Errorf("%s => unexpected error %v", c.expr, err)
 		}
 		if actual != c.expected {
-			t.Errorf("%s => expected %d, got %d", c.expr, c.expected, actual)
+			t.Errorf("%s => expected %s, got %s",
+				c.expr, uint64ToBitShiftRepr(c.expected), uint64ToBitShiftRepr(actual))
 		}
 	}
 }
@@ -62,19 +73,111 @@ func TestField(t *testing.T) {
 		expr     string
 		min, max uint
 		expected uint64
+		jobName  string
 	}{
-		{"5", 1, 7, 1 << 5},
-		{"5,6", 1, 7, 1<<5 | 1<<6},
-		{"5,6,7", 1, 7, 1<<5 | 1<<6 | 1<<7},
-		{"1,5-7/2,3", 1, 7, 1<<1 | 1<<5 | 1<<7 | 1<<3},
+		{"5", 1, 7, 1 << 5, ""},
+		{"5,6", 1, 7, 1<<5 | 1<<6, ""},
+		{"5,6,7", 1, 7, 1<<5 | 1<<6 | 1<<7, ""},
+		{"1,5-7/2,3", 1, 7, 1<<1 | 1<<5 | 1<<7 | 1<<3, ""},
+		{"H", 0, 59, 1 << 3, "job1"},
+		{"H,30", 0, 59, 1<<3 | 1<<30, "job1"},
+		{"H/30,40", 0, 59, 1<<3 | 1<<33 | 1<<40, "job1"},
 	}
 
 	for _, c := range fields {
-		actual, _ := getField(c.expr, bounds{c.min, c.max, nil})
+		actual, _ := getField(c.expr, bounds{c.min, c.max, nil}, c.jobName)
 		if actual != c.expected {
-			t.Errorf("%s => expected %d, got %d", c.expr, c.expected, actual)
+			t.Errorf("%s => expected %s, got %s", c.expr,
+				uint64ToBitShiftRepr(c.expected), uint64ToBitShiftRepr(actual))
 		}
 	}
+}
+
+func TestGetHashedValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		expr     string
+		bounds   bounds
+		jobName  string
+		expected uint64
+	}{
+		{
+			name:     "Simple H",
+			expr:     "H",
+			bounds:   bounds{min: 0, max: 59},
+			jobName:  "job1",
+			expected: 1 << 3,
+		},
+		{
+			name:     "Simple H #2",
+			expr:     "H",
+			bounds:   bounds{min: 0, max: 59},
+			jobName:  "dowJob1",
+			expected: 1 << 43,
+		},
+		{
+			name:     "Empty Job",
+			expr:     "H/2",
+			bounds:   bounds{min: 0, max: 6},
+			jobName:  "",
+			expected: 1<<1 | 1<<3 | 1<<5,
+		},
+		{
+			name:     "Simple H day of week",
+			expr:     "H/2",
+			bounds:   bounds{min: 0, max: 6},
+			jobName:  "dow2",
+			expected: 1<<1 | 1<<3 | 1<<5,
+		},
+		{
+			name:     "H with step",
+			expr:     "H/13",
+			bounds:   bounds{min: 0, max: 59},
+			jobName:  "job2",
+			expected: 1<<2 | 1<<15 | 1<<28 | 1<<41 | 1<<54,
+		},
+		{
+			name:     "Same job, different bounds",
+			expr:     "H",
+			bounds:   bounds{min: 0, max: 23},
+			jobName:  "job1",
+			expected: 1 << 2,
+		},
+		{
+			name:     "Different job, same bounds",
+			expr:     "H",
+			bounds:   bounds{min: 0, max: 59},
+			jobName:  "job3",
+			expected: 1 << 9,
+		},
+	}
+
+	for _, c := range tests {
+		t.Run(c.name, func(t *testing.T) {
+			actual, err := getHashedValue(c.expr, c.bounds, c.jobName)
+			if err != nil {
+				t.Errorf("Unexpected error: %v", err)
+			}
+			if actual != c.expected {
+				t.Errorf("%s => expected %s (%b), got %s (%b)", c.expr, uint64ToBitShiftRepr(c.expected), c.expected, uint64ToBitShiftRepr(actual), actual)
+			}
+		})
+	}
+}
+
+func uint64ToBitShiftRepr(value uint64) string {
+	var shifts []string
+	for i := uint(0); i < 64; i++ {
+		if value&(uint64(1)<<i) != 0 {
+			shifts = append(shifts, fmt.Sprintf("1<<%d", i))
+		}
+	}
+
+	if len(shifts) == 0 {
+		return "0"
+	}
+
+	return strings.Join(shifts, " | ")
 }
 
 func TestAll(t *testing.T) {
@@ -172,6 +275,68 @@ func TestParseSchedule(t *testing.T) {
 
 	for _, c := range entries {
 		actual, err := c.parser.Parse(c.expr)
+		if err != nil {
+			t.Errorf("%s => unexpected error %v", c.expr, err)
+		}
+		if !reflect.DeepEqual(actual, c.expected) {
+			t.Errorf("%s => expected %b, got %b", c.expr, c.expected, actual)
+		}
+	}
+}
+
+func TestParseWithJobNameSchedule(t *testing.T) {
+	entries := []struct {
+		parser   Parser
+		expr     string
+		jobName  string
+		expected Schedule
+	}{
+		{
+			parser:  secondParser,
+			expr:    "* H * * *",
+			jobName: "dowJob1",
+			expected: &SpecSchedule{
+				Second:   all(seconds),
+				Minute:   1 << 43,
+				Hour:     all(hours),
+				Dom:      all(dom),
+				Month:    all(months),
+				Dow:      all(dow),
+				Location: time.Local,
+			},
+		},
+		{
+			parser:  standardParser,
+			expr:    "0 0 * * H/2",
+			jobName: "", // default jobName should result in standard value
+			expected: &SpecSchedule{
+				Second:   1 << seconds.min,
+				Minute:   1 << minutes.min,
+				Hour:     1 << hours.min,
+				Dom:      all(dom),
+				Month:    all(months),
+				Dow:      1<<1 | 1<<3 | 1<<5,
+				Location: time.Local,
+			},
+		},
+		{
+			parser:  standardParser,
+			expr:    "0 0 * * H/2",
+			jobName: "dow2", // specifying job name should not result in tuesday
+			expected: &SpecSchedule{
+				Second:   1 << seconds.min,
+				Minute:   1 << minutes.min,
+				Hour:     1 << hours.min,
+				Dom:      all(dom),
+				Month:    all(months),
+				Dow:      1<<1 | 1<<3 | 1<<5,
+				Location: time.Local,
+			},
+		},
+	}
+
+	for _, c := range entries {
+		actual, err := c.parser.ParseWithJobName(c.expr, c.jobName)
 		if err != nil {
 			t.Errorf("%s => unexpected error %v", c.expr, err)
 		}
