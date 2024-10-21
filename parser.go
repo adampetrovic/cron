@@ -345,20 +345,28 @@ func getHashedValue(expr string, r bounds, jobName string) (uint64, error) {
 	}
 
 	// Generate a hash value based on the job name (if provided) and field bounds
-	h := fnv.New32a()
+	h := fnv.New64a()
 	if jobName != "" {
 		h.Write([]byte(jobName))
 	}
 	h.Write([]byte(fmt.Sprintf("%d%d", r.min, r.max)))
-	hash := h.Sum32()
+	hash := h.Sum64()
 
-	// Use the hash to select a value within the range
-	value := r.min + (uint(hash) % (r.max - r.min + 1))
+	if step == 1 {
+		// For 'H' case, return a single bit
+		start := r.min + (uint(hash) % ((r.max - r.min) + 1))
+		return 1 << start, nil
+	} else {
+		// For 'H/n' case, use the hash to determine the offset
+		offset := uint(hash % uint64(step))
 
-	// Adjust for step if necessary
-	value = r.min + ((value - r.min) / step * step)
-
-	return 1 << value, nil
+		// Generate the bit pattern
+		var result uint64
+		for i := r.min + offset; i <= r.max; i += step {
+			result |= 1 << i
+		}
+		return result, nil
+	}
 }
 
 // parseIntOrName returns the (possibly-named) integer contained in expr.
