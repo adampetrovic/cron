@@ -93,6 +93,97 @@ func TestField(t *testing.T) {
 	}
 }
 
+func TestParseHashExpression(t *testing.T) {
+	tests := []struct {
+		name      string
+		expr      string
+		bounds    bounds
+		want      hashSpec
+		wantError bool
+	}{
+		{
+			name:   "Simple H",
+			expr:   "H",
+			bounds: bounds{min: 0, max: 59},
+			want:   hashSpec{min: 0, max: 59, step: 1},
+		},
+		{
+			name:   "H with step",
+			expr:   "H/15",
+			bounds: bounds{min: 0, max: 59},
+			want:   hashSpec{min: 0, max: 59, step: 15},
+		},
+		{
+			name:   "H with range",
+			expr:   "H(0-30)",
+			bounds: bounds{min: 0, max: 59},
+			want:   hashSpec{min: 0, max: 30, step: 1},
+		},
+		{
+			name:   "H with range and step",
+			expr:   "H(0-30)/15",
+			bounds: bounds{min: 0, max: 59},
+			want:   hashSpec{min: 0, max: 30, step: 15},
+		},
+		{
+			name:   "H with day of week range",
+			expr:   "H(1-5)",
+			bounds: bounds{min: 0, max: 6},
+			want:   hashSpec{min: 1, max: 5, step: 1},
+		},
+		// Error cases
+		{
+			name:      "Invalid range format",
+			expr:      "H(1,5)",
+			bounds:    bounds{min: 0, max: 59},
+			wantError: true,
+		},
+		{
+			name:      "Range min greater than max",
+			expr:      "H(30-0)",
+			bounds:    bounds{min: 0, max: 59},
+			wantError: true,
+		},
+		{
+			name:      "Range exceeds bounds",
+			expr:      "H(0-60)",
+			bounds:    bounds{min: 0, max: 59},
+			wantError: true,
+		},
+		{
+			name:      "Invalid step",
+			expr:      "H/",
+			bounds:    bounds{min: 0, max: 59},
+			wantError: true,
+		},
+		{
+			name:      "Missing closing parenthesis",
+			expr:      "H(0-30",
+			bounds:    bounds{min: 0, max: 59},
+			wantError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseHashExpression(tt.expr, tt.bounds)
+			if tt.wantError {
+				if err == nil {
+					t.Errorf("parseHashExpression() expected error for expr: %s", tt.expr)
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("parseHashExpression() unexpected error: %v", err)
+				return
+			}
+			if got != tt.want {
+				t.Errorf("parseHashExpression() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGetHashedValue(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -116,6 +207,13 @@ func TestGetHashedValue(t *testing.T) {
 			expected: 1 << 43,
 		},
 		{
+			name:     "Simple H with range",
+			expr:     "H(0-10)",
+			bounds:   bounds{min: 0, max: 59},
+			jobName:  "job1",
+			expected: 1 << 0,
+		},
+		{
 			name:     "Empty Job",
 			expr:     "H/2",
 			bounds:   bounds{min: 0, max: 6},
@@ -135,6 +233,13 @@ func TestGetHashedValue(t *testing.T) {
 			bounds:   bounds{min: 0, max: 59},
 			jobName:  "job2",
 			expected: 1<<2 | 1<<15 | 1<<28 | 1<<41 | 1<<54,
+		},
+		{
+			name:     "H with ranged step",
+			expr:     "H(0-30)/10",
+			bounds:   bounds{min: 0, max: 59},
+			jobName:  "job2",
+			expected: 1<<8 | 1<<18 | 1<<28,
 		},
 		{
 			name:     "Same job, different bounds",
@@ -293,11 +398,11 @@ func TestParseWithJobNameSchedule(t *testing.T) {
 	}{
 		{
 			parser:  secondParser,
-			expr:    "* H * * *",
+			expr:    "* H,47,59 * * *",
 			jobName: "dowJob1",
 			expected: &SpecSchedule{
 				Second:   all(seconds),
-				Minute:   1 << 43,
+				Minute:   1<<43 | 1<<47 | 1<<59,
 				Hour:     all(hours),
 				Dom:      all(dom),
 				Month:    all(months),

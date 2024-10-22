@@ -50,6 +50,10 @@ type Parser struct {
 	options ParseOption
 }
 
+type hashSpec struct {
+	min, max, step uint
+}
+
 // NewParser creates a Parser with custom options.
 //
 // It panics if more than one Optional is given, since it would be impossible to
@@ -327,24 +331,81 @@ func getRange(expr string, r bounds, jobName string) (uint64, error) {
 	return getBits(start, end, step) | extra, nil
 }
 
-func getHashedValue(expr string, r bounds, jobName string) (uint64, error) {
-	var step uint
-	var err error
+// parseHashExpression parses a hashed cron expression and returns a hashSpec containing
+// the parsed values. The expression can be in the following forms:
+//   - "H": Uses the provided bounds as min/max with step of 1
+//   - "H/n": Uses the provided bounds as min/max with step of n
+//   - "H(min-max)": Uses the specified range with step of 1
+//   - "H(min-max)/n": Uses the specified range with step of n
+//
+// Parameters:
+//   - expr: The hash expression to parse (e.g., "H", "H/2", "H(1-10)", "H(1-10)/2")
+//   - r: The bounds object containing the minimum and maximum allowed values
+//
+// Returns:
+//   - hashSpec: Contains the parsed min, max, and step values
+//   - error: If the expression is invalid or values are out of bounds
+func parseHashExpression(expr string, r bounds) (hashSpec, error) {
+	// set default
+	spec := hashSpec{min: r.min, max: r.max, step: 1}
 
-	// Parse step if present
-	parts := strings.Split(expr, "/")
-	if len(parts) == 1 {
-		step = 1
-	} else if len(parts) == 2 {
-		step, err = mustParseInt(parts[1])
-		if err != nil {
-			return 0, fmt.Errorf("invalid step value in '%s': %v", expr, err)
+	// Parse range if present
+	if rangeStart := strings.Index(expr, "("); rangeStart != -1 {
+		rangeEnd := strings.Index(expr, ")")
+		if rangeEnd == -1 {
+			return spec, fmt.Errorf("missing closing parenthesis")
 		}
-	} else {
-		return 0, fmt.Errorf("invalid hashed expression: %s", expr)
+
+		rangeParts := strings.Split(expr[rangeStart+1:rangeEnd], "-")
+		if len(rangeParts) != 2 {
+			return spec, fmt.Errorf("invalid range format")
+		}
+
+		var err error
+		if spec.min, err = mustParseInt(rangeParts[0]); err != nil {
+			return spec, err
+		}
+		if spec.max, err = mustParseInt(rangeParts[1]); err != nil {
+			return spec, err
+		}
+
+		if spec.min > spec.max || spec.min < r.min || spec.max > r.max {
+			return spec, fmt.Errorf("invalid range")
+		}
+
+		expr = expr[:rangeStart] + expr[rangeEnd+1:]
 	}
 
-	// Generate a hash value based on the job name (if provided) and field bounds
+	// Parse step if present
+	if strings.Contains(expr, "/") {
+		parts := strings.Split(expr, "/")
+		if len(parts) != 2 {
+			return spec, fmt.Errorf("invalid step format")
+		}
+
+		var err error
+		if spec.step, err = mustParseInt(parts[1]); err != nil {
+			return spec, err
+		}
+	}
+
+	return spec, nil
+}
+
+// getHashedValue generates a bit pattern based on a hashed cron expression.
+// It supports various formats of hashed expressions and generates consistent
+// but pseudo-random values based on the provided job name.
+//
+// Parameters:
+//   - expr: The hash expression to evaluate (e.g., "H", "H/2", "H(1-10)", "H(1-10)/2")
+//   - r: The bounds object containing the minimum and maximum allowed values
+//   - jobName: A string identifier used to generate consistent hash values
+func getHashedValue(expr string, r bounds, jobName string) (uint64, error) {
+	spec, err := parseHashExpression(expr, r)
+	if err != nil {
+		return 0, err
+	}
+
 	h := fnv.New64a()
 	if jobName != "" {
 		h.Write([]byte(jobName))
@@ -352,21 +413,17 @@ func getHashedValue(expr string, r bounds, jobName string) (uint64, error) {
 	h.Write([]byte(fmt.Sprintf("%d%d", r.min, r.max)))
 	hash := h.Sum64()
 
-	if step == 1 {
-		// For 'H' case, return a single bit
-		start := r.min + (uint(hash) % ((r.max - r.min) + 1))
-		return 1 << start, nil
-	} else {
-		// For 'H/n' case, use the hash to determine the offset
-		offset := uint(hash % uint64(step))
-
-		// Generate the bit pattern
-		var result uint64
-		for i := r.min + offset; i <= r.max; i += step {
-			result |= 1 << i
-		}
-		return result, nil
+	if spec.step == 1 {
+		value := spec.min + (uint(hash) % (spec.max - spec.min + 1))
+		return 1 << value, nil
 	}
+
+	offset := uint(hash % uint64(spec.step))
+	var result uint64
+	for i := spec.min + offset; i <= spec.max; i += spec.step {
+		result |= 1 << i
+	}
+	return result, nil
 }
 
 // parseIntOrName returns the (possibly-named) integer contained in expr.
